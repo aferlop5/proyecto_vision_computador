@@ -1,358 +1,352 @@
-"""Utilidades para el proyecto de visión por computador.
-
-Incluye funciones para:
-- Carga de dataset desde subcarpetas por clase
-- División train/test
-- Guardado de imágenes procesadas por etapa
-- Gestión de directorios de salida
-- Persistencia de modelos (guardar/cargar)
-- Visualización de contornos para depuración
-
-Todas las funciones implementan manejo de errores (try/except) y logging.
 """
-
+Funciones auxiliares para el proyecto de visión por computador.
+Incluye carga de dataset, particionado, guardado de artefactos, serialización de modelos
+y utilidades de visualización y etiquetas.
+"""
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
-
+import os
+import sys
 import logging
+from typing import List, Tuple, Sequence, Optional, Any
 
-# Logger básico del módulo
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-	logging.basicConfig(
-		level=logging.INFO,
-		format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-	)
-
-try:
-	import cv2  # type: ignore
-except Exception as e:  # pragma: no cover - dependencia opcional
-	cv2 = None  # type: ignore
-	logger.warning("OpenCV (cv2) no está disponible: %s", e)
-
-try:
-	import numpy as np  # type: ignore
-except Exception as e:  # pragma: no cover
-	np = None  # type: ignore
-	logger.warning("NumPy no está disponible: %s", e)
-
-try:
-	import matplotlib.pyplot as plt  # type: ignore
-except Exception as e:  # pragma: no cover
-	plt = None  # type: ignore
-	logger.warning("matplotlib no está disponible: %s", e)
-
-try:
-	from PIL import Image  # type: ignore
-except Exception as e:  # pragma: no cover
-	Image = None  # type: ignore
-	logger.warning("Pillow (PIL) no está disponible: %s", e)
-
-try:
-	from . import config as CFG
-except Exception as e:  # pragma: no cover
-	CFG = None  # type: ignore
-	logger.error("No se pudo importar config.py: %s", e)
+# Raíz del proyecto (padre de este directorio 'codigo')
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _ensure_dir(path: Path) -> None:
-	"""Crea el directorio si no existe."""
-	try:
-		path.mkdir(parents=True, exist_ok=True)
-	except Exception as e:
-		logger.error("No se pudo crear el directorio %s: %s", path, e)
-		raise
+def _resolve_path(path: str) -> str:
+    """Resuelve rutas relativas respecto a la raíz del proyecto."""
+    return path if os.path.isabs(path) else os.path.normpath(os.path.join(PROJECT_ROOT, path))
+
+# Intentamos importar la configuración desde distintas ubicaciones posibles
+try:  # Si 'codigo' es paquete
+    from . import config as config  # type: ignore
+except Exception:  # Si no es paquete, intentamos resolver por nombre
+    try:
+        import config  # type: ignore
+    except Exception:  # Como último recurso, seguimos sin config
+        config = None  # type: ignore
+
+# Configuración básica de logging (solo si no existe una configuración previa)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    )
+
+LOGGER = logging.getLogger(__name__)
+
+# Extensiones de imagen soportadas
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+# Rutas por defecto si no hay config
+DATASET_PATH_DEFAULT = "./dataset"
+MODELOS_PATH_DEFAULT = "./modelos"
+RESULTADOS_PATH_DEFAULT = "./resultados"
+
+
+def _ensure_dir(path: str) -> None:
+    """Crea el directorio si no existe (anidado)."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        LOGGER.error("No se pudo crear el directorio '%s': %s", path, e)
+        raise
+
+
+def _is_image_file(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTS
 
 
 def crear_directorios() -> None:
-	"""Asegura que existan las carpetas de modelos y resultados."""
-	if CFG is None:
-		raise RuntimeError("La configuración (CFG) no está disponible.")
-	try:
-		_ensure_dir(CFG.MODELOS_DIR)
-		_ensure_dir(CFG.RESULTADOS_DIR)
-		logger.info("Directorios verificados: %s, %s", CFG.MODELOS_DIR, CFG.RESULTADOS_DIR)
-	except Exception:
-		logger.exception("Error creando directorios de salida")
-		raise
+    """
+    Asegura que existan los directorios de modelos y resultados.
+    Usa rutas de config si existen; si no, usa valores por defecto.
+    """
+    modelos_path = _resolve_path(getattr(config, "MODELOS_PATH", MODELOS_PATH_DEFAULT) if config else MODELOS_PATH_DEFAULT)
+    resultados_path = _resolve_path(getattr(config, "RESULTADOS_PATH", RESULTADOS_PATH_DEFAULT) if config else RESULTADOS_PATH_DEFAULT)
+
+    LOGGER.info("Creando directorios si no existen: modelos='%s', resultados='%s'", modelos_path, resultados_path)
+    _ensure_dir(modelos_path)
+    _ensure_dir(resultados_path)
 
 
-def _listar_imagenes(carpeta: Path) -> List[Path]:
-	"""Lista rutas de imágenes con extensiones comunes dentro de una carpeta."""
-	exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-	archivos: List[Path] = []
-	try:
-		for p in carpeta.glob("**/*"):
-			if p.is_file() and p.suffix.lower() in exts:
-				archivos.append(p)
-	except Exception as e:
-		logger.error("Error listando imágenes en %s: %s", carpeta, e)
-	return archivos
+def guardar_imagen_procesada(imagen: Any, nombre: str, etapa: str) -> Optional[str]:
+    """
+    Guarda una imagen de alguna etapa de pre/procesado para documentación.
+
+    - imagen: matriz de imagen (esperado: numpy.ndarray, BGR o RGB)
+    - nombre: nombre de archivo (con o sin extensión)
+    - etapa: subcarpeta bajo 'resultados'
+
+    Devuelve la ruta escrita si tiene éxito, o None si falla.
+    """
+    try:
+        import cv2  # local import para reducir dependencias si no se usa
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible: %s", e)
+        return None
+
+    resultados_base = _resolve_path(getattr(config, "RESULTADOS_PATH", RESULTADOS_PATH_DEFAULT) if config else RESULTADOS_PATH_DEFAULT)
+    destino_dir = os.path.join(resultados_base, etapa)
+    _ensure_dir(destino_dir)
+
+    root, ext = os.path.splitext(nombre)
+    if not ext:
+        ext = ".png"
+    destino_path = os.path.join(destino_dir, root + ext)
+
+    try:
+        ok = cv2.imwrite(destino_path, imagen)
+        if not ok:
+            LOGGER.warning("cv2.imwrite devolvió False para '%s'", destino_path)
+            return None
+        LOGGER.info("Imagen guardada: %s", destino_path)
+        return destino_path
+    except Exception as e:
+        LOGGER.error("Fallo al guardar imagen '%s': %s", destino_path, e)
+        return None
 
 
-def cargar_dataset(ruta_base: Optional[Path | str] = None) -> Tuple[List, List[int], List[Path]]:
-	"""Carga imágenes y etiquetas desde subcarpetas por clase.
+def cargar_dataset(ruta_base: Optional[str] = None) -> Tuple[List[Any], List[str]]:
+    """
+    Carga imágenes y etiquetas desde las carpetas directas: arandelas/, tornillos/, tuercas/
+    sin descender a subcarpetas (p. ej., de ángulos). Devuelve (imagenes, etiquetas).
 
-	Estructura esperada:
-		ruta_base/
-		  tuercas/
-		  tornillos/
-		  arandelas/
+    - ruta_base: ruta al directorio del dataset (por defecto usa config.DATASET_PATH o './dataset')
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible para leer imágenes: %s", e)
+        return [], []
 
-	Retorna:
-		- imagenes: lista de imágenes (np.ndarray o PIL.Image según disponibilidad)
-		- etiquetas: lista de enteros (según CFG.CLASS_TO_LABEL)
-		- rutas: lista de rutas de archivos correspondientes (Path)
-	"""
-	if CFG is None:
-		raise RuntimeError("La configuración (CFG) no está disponible.")
+    base = _resolve_path(ruta_base or (getattr(config, "DATASET_PATH", DATASET_PATH_DEFAULT) if config else DATASET_PATH_DEFAULT))
+    clases = ["arandelas", "tornillos", "tuercas"]
 
-	base = Path(ruta_base) if ruta_base is not None else CFG.DATASET_DIR
-	imagenes: List = []
-	etiquetas: List[int] = []
-	rutas: List[Path] = []
+    imagenes: List[Any] = []
+    etiquetas: List[str] = []
 
-	if not base.exists():
-		logger.error("La ruta base del dataset no existe: %s", base)
-		return imagenes, etiquetas, rutas
+    for clase in clases:
+        clase_dir = os.path.join(base, clase)
+        if not os.path.isdir(clase_dir):
+            LOGGER.warning("Directorio de clase no encontrado: %s", clase_dir)
+            continue
+        try:
+            for fname in os.listdir(clase_dir):
+                fpath = os.path.join(clase_dir, fname)
+                if not os.path.isfile(fpath):
+                    # Ignorar subcarpetas u otros
+                    continue
+                if not _is_image_file(fpath):
+                    continue
+                try:
+                    img = cv2.imread(fpath, cv2.IMREAD_COLOR)
+                    if img is None:
+                        LOGGER.warning("No se pudo leer imagen: %s", fpath)
+                        continue
+                    imagenes.append(img)
+                    etiquetas.append(clase)
+                except Exception as e:
+                    LOGGER.error("Error leyendo '%s': %s", fpath, e)
+        except Exception as e:
+            LOGGER.error("Error listando '%s': %s", clase_dir, e)
 
-	for clase in CFG.CLASSES:
-		carpeta_clase = base / clase
-		if not carpeta_clase.exists():
-			logger.warning("Carpeta de clase no encontrada: %s", carpeta_clase)
-			continue
-		for ruta in _listar_imagenes(carpeta_clase):
-			try:
-				img = None
-				if cv2 is not None:
-					img = cv2.imread(str(ruta), cv2.IMREAD_COLOR)
-					if img is None:
-						raise ValueError("cv2.imread devolvió None")
-				elif Image is not None:
-					img = Image.open(ruta).convert("RGB")
-				else:
-					raise RuntimeError("No hay backend de imagen disponible (cv2 o PIL)")
+    LOGGER.info("Cargadas %d imágenes de %s", len(imagenes), base)
+    return imagenes, etiquetas
 
-				imagenes.append(img)
-				etiquetas.append(CFG.CLASS_TO_LABEL[clase])
-				rutas.append(ruta)
-			except Exception as e:
-				logger.warning("No se pudo leer %s: %s", ruta, e)
 
-	logger.info(
-		"Dataset cargado: %d imágenes, clases=%s desde %s",
-		len(imagenes), CFG.CLASSES, base,
-	)
-	return imagenes, etiquetas, rutas
+def listar_imagenes(ruta_base: Optional[str] = None) -> Tuple[List[str], List[str]]:
+    """
+    Devuelve listas paralelas (rutas_imagenes, etiquetas) sin cargar en memoria las imágenes.
+    Útil para pipelines con grandes datasets (menor uso de RAM).
+    """
+    base = _resolve_path(ruta_base or (getattr(config, "DATASET_PATH", DATASET_PATH_DEFAULT) if config else DATASET_PATH_DEFAULT))
+    clases = ["arandelas", "tornillos", "tuercas"]
+
+    rutas: List[str] = []
+    etiquetas: List[str] = []
+
+    for clase in clases:
+        clase_dir = os.path.join(base, clase)
+        if not os.path.isdir(clase_dir):
+            LOGGER.warning("Directorio de clase no encontrado: %s", clase_dir)
+            continue
+        try:
+            for fname in os.listdir(clase_dir):
+                fpath = os.path.join(clase_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                if not _is_image_file(fpath):
+                    continue
+                rutas.append(fpath)
+                etiquetas.append(clase)
+        except Exception as e:
+            LOGGER.error("Error listando '%s': %s", clase_dir, e)
+
+    LOGGER.info("Listadas %d rutas de %s", len(rutas), base)
+    return rutas, etiquetas
 
 
 def dividir_dataset(
-	caracteristicas: Sequence,
-	etiquetas: Sequence[int],
-	test_size: float = 0.2,
-	stratify: bool = True,
+    caracteristicas: Sequence[Any],
+    etiquetas: Sequence[Any],
+    test_size: float = 0.2,
+    random_state: int = 42,
 ):
-	"""Divide características y etiquetas en train/test.
+    """
+    Divide en entrenamiento y prueba. Intenta usar sklearn para estratificación; si no está
+    disponible, realiza una división simple conservando orden tras barajar con semilla fija.
 
-	Si scikit-learn no está disponible, emite error con instrucción.
-	"""
-	try:
-		from sklearn.model_selection import train_test_split  # type: ignore
-	except Exception as e:  # pragma: no cover
-		logger.error(
-			"scikit-learn no está instalado o falló al importar: %s. Instala con 'pip install scikit-learn'",
-			e,
-		)
-		raise
-
-	y = list(etiquetas)
-	X = list(caracteristicas)
-	strat = y if stratify and len(set(y)) > 1 else None
-	try:
-		X_tr, X_te, y_tr, y_te = train_test_split(
-			X, y,
-			test_size=test_size,
-			random_state=getattr(CFG, "RANDOM_STATE", 42),
-			stratify=strat,
-		)
-		logger.info(
-			"Split: train=%d, test=%d (test_size=%.2f)", len(X_tr), len(X_te), test_size
-		)
-		return X_tr, X_te, y_tr, y_te
-	except Exception as e:
-		logger.exception("Error al dividir el dataset: %s", e)
-		raise
-
-
-def guardar_imagen_procesada(
-	imagen,
-	nombre: str,
-	etapa: str,
-) -> Optional[Path]:
-	"""Guarda una imagen procesada en resultados/etapa/nombre.
-
-	- imagen: np.ndarray (BGR o GRAY) si se usa OpenCV, o PIL.Image.
-	- nombre: nombre de archivo (se añadirá .png si no tiene extensión).
-	- etapa: subcarpeta para agrupar resultados por paso del pipeline.
-	"""
-	if CFG is None:
-		raise RuntimeError("La configuración (CFG) no está disponible.")
-
-	try:
-		ext = Path(nombre).suffix
-		fname = nombre if ext else f"{nombre}.png"
-		carpeta = CFG.RESULTADOS_DIR / etapa
-		_ensure_dir(carpeta)
-		destino = carpeta / fname
-
-		if cv2 is not None and np is not None and isinstance(imagen, np.ndarray):
-			arr = imagen
-			# Normalización para float
-			if arr.dtype.kind == "f":
-				arr = np.clip(arr, 0.0, 1.0)
-				arr = (arr * 255).astype("uint8")
-			ok = cv2.imwrite(str(destino), arr)
-			if not ok:
-				raise IOError("cv2.imwrite devolvió False")
-		elif Image is not None and isinstance(imagen, Image.Image):
-			imagen.save(destino)
-		else:
-			raise TypeError("Tipo de imagen no soportado; se espera np.ndarray o PIL.Image")
-
-		logger.info("Imagen guardada: %s", destino)
-		return destino
-	except Exception as e:
-		logger.exception("No se pudo guardar imagen procesada '%s' en etapa '%s': %s", nombre, etapa, e)
-		return None
+    Devuelve: X_train, X_test, y_train, y_test
+    """
+    try:
+        from sklearn.model_selection import train_test_split  # type: ignore
+        return train_test_split(
+            list(caracteristicas), list(etiquetas),
+            test_size=test_size, random_state=random_state, stratify=list(etiquetas)
+        )
+    except Exception as e:
+        LOGGER.warning("sklearn no disponible o error en train_test_split (%s). Usando fallback.", e)
+        # Fallback manual
+        import random
+        n = len(caracteristicas)
+        idx = list(range(n))
+        random.Random(random_state).shuffle(idx)
+        cut = int(n * (1 - test_size))
+        train_idx = idx[:cut]
+        test_idx = idx[cut:]
+        X = list(caracteristicas)
+        y = list(etiquetas)
+        X_train = [X[i] for i in train_idx]
+        X_test = [X[i] for i in test_idx]
+        y_train = [y[i] for i in train_idx]
+        y_test = [y[i] for i in test_idx]
+        return X_train, X_test, y_train, y_test
 
 
-def guardar_modelo(modelo, ruta: Path | str) -> Optional[Path]:
-	"""Guarda un modelo con joblib si está disponible, sino pickle.
+def guardar_modelo(modelo: Any, ruta: str) -> Optional[str]:
+    """Guarda un modelo (SVM/KNN/etc.). Intenta usar joblib, si falla usa pickle."""
+    # Crear directorio destino
+    ruta_resuelta = _resolve_path(ruta)
+    destino_dir = os.path.dirname(ruta_resuelta) or _resolve_path(getattr(config, "MODELOS_PATH", MODELOS_PATH_DEFAULT) if config else MODELOS_PATH_DEFAULT)
+    if destino_dir:
+        _ensure_dir(destino_dir)
 
-	Retorna la ruta final si tuvo éxito, None en caso de error.
-	"""
-	path = Path(ruta)
-	try:
-		_ensure_dir(path.parent)
+    # Intento con joblib
+    try:
+        import joblib  # type: ignore
+        joblib.dump(modelo, ruta_resuelta)
+        LOGGER.info("Modelo guardado con joblib: %s", ruta_resuelta)
+        return ruta_resuelta
+    except Exception as e:
+        LOGGER.warning("joblib no disponible o fallo al guardar (%s). Usando pickle.", e)
 
-		try:
-			import joblib  # type: ignore
-
-			joblib.dump(modelo, path)
-			logger.info("Modelo guardado (joblib): %s", path)
-			return path
-		except Exception as e_joblib:  # fallback a pickle
-			import pickle
-
-			with open(path, "wb") as f:
-				pickle.dump(modelo, f)
-			logger.info("Modelo guardado (pickle, fallback por error joblib: %s): %s", e_joblib, path)
-			return path
-	except Exception as e:
-		logger.exception("No se pudo guardar el modelo en %s: %s", path, e)
-		return None
-
-
-def cargar_modelo(ruta: Path | str):
-	"""Carga un modelo previamente guardado con joblib o pickle."""
-	path = Path(ruta)
-	if not path.exists():
-		logger.error("La ruta del modelo no existe: %s", path)
-		return None
-	try:
-		try:
-			import joblib  # type: ignore
-
-			modelo = joblib.load(path)
-			logger.info("Modelo cargado (joblib): %s", path)
-			return modelo
-		except Exception as e_joblib:  # fallback a pickle
-			import pickle
-
-			with open(path, "rb") as f:
-				modelo = pickle.load(f)
-			logger.info("Modelo cargado (pickle, fallback por error joblib: %s): %s", e_joblib, path)
-			return modelo
-	except Exception as e:
-		logger.exception("No se pudo cargar el modelo desde %s: %s", path, e)
-		return None
+    # Fallback con pickle
+    try:
+        import pickle
+        with open(ruta_resuelta, "wb") as f:
+            pickle.dump(modelo, f)
+        LOGGER.info("Modelo guardado con pickle: %s", ruta_resuelta)
+        return ruta_resuelta
+    except Exception as e:
+        LOGGER.error("No se pudo guardar el modelo en '%s': %s", ruta, e)
+        return None
 
 
-def plot_contornos(imagen, contornos: Iterable, color: Tuple[int, int, int] = (0, 255, 0), thickness: int = 2):
-	"""Genera una figura con contornos superpuestos para depuración.
+def cargar_modelo(ruta: str) -> Optional[Any]:
+    """Carga un modelo serializado (intenta joblib y luego pickle)."""
+    ruta_resuelta = _resolve_path(ruta)
+    if not os.path.exists(ruta_resuelta):
+        LOGGER.error("Ruta de modelo no encontrada: %s", ruta_resuelta)
+        return None
 
-	- imagen: np.ndarray (BGR o GRAY) o PIL.Image
-	- contornos: iterable de contornos (como los de cv2.findContours)
-	- color: color BGR para cv2 o RGB para matplotlib
+    try:
+        import joblib  # type: ignore
+        modelo = joblib.load(ruta_resuelta)
+        LOGGER.info("Modelo cargado con joblib: %s", ruta_resuelta)
+        return modelo
+    except Exception:
+        pass
 
-	Retorna (fig, ax) de matplotlib, o None si matplotlib no está disponible.
-	"""
-	if plt is None:
-		logger.warning("matplotlib no disponible; no se puede generar la visualización de contornos")
-		return None
-
-	try:
-		if cv2 is not None and np is not None and isinstance(imagen, np.ndarray):
-			img = imagen.copy()
-			# Si es gris, convertir a BGR para dibujar en color
-			if len(img.shape) == 2:
-				img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-			# Dibujar contornos
-			try:
-				cv2.drawContours(img, list(contornos), -1, color, thickness)
-			except Exception:
-				# Compatibilidad si contornos no es compatible con drawContours
-				for c in contornos:
-					try:
-						cv2.drawContours(img, [c], -1, color, thickness)
-					except Exception:
-						continue
-			# Convertir a RGB para plt
-			img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-			fig, ax = plt.subplots(figsize=(6, 6))
-			ax.imshow(img_rgb)
-			ax.axis('off')
-			ax.set_title('Contornos (OpenCV)')
-			return fig, ax
-		elif Image is not None and isinstance(imagen, Image.Image):
-			fig, ax = plt.subplots(figsize=(6, 6))
-			ax.imshow(imagen)
-			ax.axis('off')
-			# Dibujo básico de contornos si son arrays Nx1x2 o Nx2
-			try:
-				import numpy as _np  # local
-
-				for c in contornos:
-					arr = _np.array(c).squeeze()
-					if arr.ndim == 2 and arr.shape[1] == 2:
-						ax.plot(arr[:, 0], arr[:, 1], color=_color_to_hex(color), linewidth=1.5)
-			except Exception:
-				pass
-			ax.set_title('Contornos (PIL)')
-			return fig, ax
-		else:
-			logger.error("Tipo de imagen no soportado para plot_contornos")
-			return None
-	except Exception as e:
-		logger.exception("Error generando visualización de contornos: %s", e)
-		return None
+    try:
+        import pickle
+        with open(ruta_resuelta, "rb") as f:
+            modelo = pickle.load(f)
+        LOGGER.info("Modelo cargado con pickle: %s", ruta_resuelta)
+        return modelo
+    except Exception as e:
+        LOGGER.error("No se pudo cargar el modelo '%s': %s", ruta, e)
+        return None
 
 
-def _color_to_hex(bgr: Tuple[int, int, int]) -> str:
-	"""Convierte BGR/RGB (0-255) a hex para matplotlib."""
-	b, g, r = bgr
-	return f"#{r:02x}{g:02x}{b:02x}"
+def plot_contornos(imagen: Any, contornos: Sequence[Any]) -> None:
+    """
+    Dibuja contornos sobre la imagen para depuración. Si matplotlib está disponible, muestra una ventana.
+    En cualquier caso, también intenta guardar una versión con contornos en 'resultados/debug_contornos/'.
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV no disponible para dibujar contornos: %s", e)
+        return
+
+    try:
+        import numpy as np  # type: ignore
+    except Exception as e:
+        LOGGER.error("NumPy no disponible: %s", e)
+        return
+
+    # Aseguramos una copia en color
+    if len(getattr(imagen, "shape", [])) == 2:
+        canvas = cv2.cvtColor(imagen, cv2.COLOR_GRAY2BGR)
+    else:
+        canvas = imagen.copy()
+
+    try:
+        cv2.drawContours(canvas, contornos, -1, (0, 255, 0), 2)
+    except Exception as e:
+        LOGGER.error("Error dibujando contornos: %s", e)
+        return
+
+    # Mostrar si es posible
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+        plt.figure("Contornos")
+        # Convertir BGR->RGB para matplotlib
+        canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        plt.imshow(canvas_rgb)
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show(block=False)
+    except Exception as e:
+        LOGGER.info("Matplotlib no disponible para mostrar: %s", e)
+
+    # Guardar para debug
+    guardar_imagen_procesada(canvas, "contornos_debug.png", etapa="debug_contornos")
 
 
-__all__ = [
-	"cargar_dataset",
-	"dividir_dataset",
-	"guardar_imagen_procesada",
-	"crear_directorios",
-	"guardar_modelo",
-	"cargar_modelo",
-	"plot_contornos",
-]
+def generar_etiquetas_desde_ruta(ruta_imagen: str) -> Optional[str]:
+    """
+    Extrae la etiqueta (clase) a partir de la ruta del archivo.
+    Busca alguno de: 'arandelas', 'tornillos', 'tuercas' en los componentes del path.
+    Si no encuentra, intenta usar el directorio padre inmediato.
+    """
+    objetivo = {"arandelas", "tornillos", "tuercas"}
+    partes = [p.lower() for p in ruta_imagen.replace("\\", "/").split("/") if p]
 
+    for p in partes:
+        if p in objetivo:
+            return p
+
+    # Si no hay coincidencia directa, usa el padre inmediato del archivo
+    try:
+        padre = os.path.basename(os.path.dirname(ruta_imagen))
+        padre_l = padre.lower()
+        if padre_l in objetivo:
+            return padre_l
+    except Exception:
+        pass
+
+    LOGGER.warning("No se pudo inferir etiqueta desde la ruta: %s", ruta_imagen)
+    return None

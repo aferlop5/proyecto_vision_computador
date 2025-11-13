@@ -1,0 +1,3 @@
+total_imagenes=472
+procesadas=472
+saltadas=0

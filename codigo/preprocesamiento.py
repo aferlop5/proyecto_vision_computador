@@ -1,227 +1,218 @@
-"""Funciones de preprocesamiento de imágenes.
-
-Cada función usa por defecto los parámetros definidos en config.py (CFG),
-pero permite sobrescribirlos con argumentos opcionales.
 """
-
+Módulo de preprocesamiento de imágenes usando parámetros de configuracion en codigo/config.py.
+Incluye funciones: redimensionar, conversión a gris, filtro gaussiano, ecualización, normalización,
+morfología y binarización (Otsu por defecto).
+"""
 from __future__ import annotations
 
-from typing import Optional, Tuple, Union, Any
 import logging
+from typing import Optional, Tuple, Any
 
+# Importación robusta de config
 try:
-	import cv2  # type: ignore
-	import numpy as np  # type: ignore
-except Exception as e:  # pragma: no cover
-	cv2 = None  # type: ignore
-	np = None  # type: ignore
-	raise RuntimeError(
-		"Se requieren 'opencv-python' (cv2) y 'numpy' para preprocesamiento."
-	) from e
+    from . import config as config  # type: ignore
+except Exception:
+    try:
+        import config  # type: ignore
+    except Exception:
+        config = None  # type: ignore
 
-try:
-	from . import config as CFG
-except Exception as e:  # pragma: no cover
-	raise RuntimeError("No se pudo importar config.py") from e
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+
+LOGGER = logging.getLogger(__name__)
 
 
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-	logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+def redimensionar_imagen(imagen: Any, tamaño: Optional[Tuple[int, int]] = None) -> Any:
+    """
+    Redimensiona la imagen al tamaño especificado; por defecto usa config.IMAGE_SIZE.
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible: %s", e)
+        return imagen
 
-
-# =============================
-# Helpers internos
-# =============================
-
-def _get_interpolation(name: Optional[str]) -> int:
-	"""Mapea nombre de interpolación a constante de cv2."""
-	name = (name or CFG.RESIZE_INTERPOLATION or "area").lower()
-	mapping = {
-		"nearest": cv2.INTER_NEAREST,
-		"linear": cv2.INTER_LINEAR,
-		"bilinear": cv2.INTER_LINEAR,
-		"area": cv2.INTER_AREA,
-		"cubic": cv2.INTER_CUBIC,
-		"bicubic": cv2.INTER_CUBIC,
-		"lanczos": cv2.INTER_LANCZOS4,
-		"lanczos4": cv2.INTER_LANCZOS4,
-	}
-	return mapping.get(name, cv2.INTER_AREA)
-
-
-def _ensure_tuple_size(size: Optional[Tuple[int, int] | int], fallback: Tuple[int, int]) -> Tuple[int, int]:
-	if size is None:
-		return fallback
-	if isinstance(size, int):
-		return (size, size)
-	return tuple(int(x) for x in size)
-
-
-def _morph_params(operacion: Optional[str]) -> Tuple[int, int]:
-	"""Devuelve (morph_op_code, iteraciones) a partir de nombre de operación.
-
-	Acepta nombres en español e inglés (apertura/open, cierre/close, erosion/erode, dilatacion/dilate).
-	"""
-	name = (operacion or getattr(CFG, "MORPH_OP", "open")).lower()
-	# Normalizar acentos y equivalentes
-	name = (
-		name.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-	)
-	aliases = {
-		"apertura": "open",
-		"open": "open",
-		"cierre": "close",
-		"close": "close",
-		"erosion": "erode",
-		"erode": "erode",
-		"dilatacion": "dilate",
-		"dilate": "dilate",
-	}
-	op_std = aliases.get(name, "open")
-	morph_map = {
-		"open": cv2.MORPH_OPEN,
-		"close": cv2.MORPH_CLOSE,
-	}
-	iteraciones = int(getattr(CFG, "MORPH_ITERATIONS", 1))
-	if op_std in morph_map:
-		return morph_map[op_std], iteraciones
-	# Para erode/dilate usamos funciones dedicadas; devolveremos MORPH_ERODE como señal
-	if op_std == "erode":
-		return cv2.MORPH_ERODE, iteraciones
-	if op_std == "dilate":
-		return cv2.MORPH_DILATE, iteraciones
-	return cv2.MORPH_OPEN, iteraciones
-
-
-def _make_kernel(kernel: Optional[Union[int, Tuple[int, int]]]) -> Any:
-	ktuple = _ensure_tuple_size(kernel, getattr(CFG, "MORPH_KERNEL_SIZE", (3, 3)))
-	kx, ky = ktuple
-	# Asegurar impares
-	if kx % 2 == 0:
-		kx += 1
-	if ky % 2 == 0:
-		ky += 1
-	return cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
-
-
-# =============================
-# Funciones públicas
-# =============================
-
-def redimensionar_imagen(
-	imagen: Any,
-	tamaño: Optional[Tuple[int, int]] = None,
-) -> Any:
-	"""Redimensiona una imagen al tamaño especificado (ancho, alto).
-
-	Usa por defecto CFG.IMAGE_SIZE y CFG.RESIZE_INTERPOLATION.
-	"""
-	try:
-		size = _ensure_tuple_size(tamaño, CFG.IMAGE_SIZE)
-		inter = _get_interpolation(getattr(CFG, "RESIZE_INTERPOLATION", "area"))
-		# cv2.resize espera (width, height)
-		resized = cv2.resize(imagen, size, interpolation=inter)
-		return resized
-	except Exception as e:
-		logger.exception("Error al redimensionar: %s", e)
-		raise
+    target = tamaño or (getattr(config, "IMAGE_SIZE", None) if config else None) or (500, 500)
+    try:
+        return cv2.resize(imagen, target, interpolation=cv2.INTER_AREA)
+    except Exception as e:
+        LOGGER.error("Error redimensionando a %s: %s", target, e)
+        return imagen
 
 
 def convertir_gris(imagen: Any) -> Any:
-	"""Convierte a escala de grises si es necesario."""
-	try:
-		if imagen.ndim == 2:
-			return imagen
-		if imagen.ndim == 3 and imagen.shape[2] == 3:
-			return cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
-		if imagen.ndim == 3 and imagen.shape[2] == 4:
-			# Si tiene alfa, ignorarlo al convertir
-			return cv2.cvtColor(imagen, cv2.COLOR_BGRA2GRAY)
-		# Fallback: intentar forzar a gris
-		return cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
-	except Exception as e:
-		logger.exception("Error al convertir a gris: %s", e)
-		raise
+    """Convierte una imagen BGR/RGB a gris. Si ya es 1 canal, la devuelve tal cual."""
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible: %s", e)
+        return imagen
+
+    try:
+        shape = getattr(imagen, "shape", None)
+        if shape is None:
+            return imagen
+        if len(shape) == 2:
+            return imagen
+        # Asumimos BGR (convención OpenCV)
+        return cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
+    except Exception as e:
+        LOGGER.error("Error convirtiendo a gris: %s", e)
+        return imagen
 
 
-def aplicar_filtro_gaussiano(
-	imagen: Any,
-	kernel: Optional[Tuple[int, int]] = None,
-) -> Any:
-	"""Aplica desenfoque Gaussiano con kernel y sigmas de CFG por defecto."""
-	try:
-		ksize = _ensure_tuple_size(kernel, CFG.GAUSSIAN_KERNEL_SIZE)
-		kx, ky = ksize
-		# Asegurar impares
-		if kx % 2 == 0:
-			kx += 1
-		if ky % 2 == 0:
-			ky += 1
-		sigma_x = float(getattr(CFG, "GAUSSIAN_SIGMA_X", 0.0))
-		sigma_y = float(getattr(CFG, "GAUSSIAN_SIGMA_Y", 0.0))
-		return cv2.GaussianBlur(imagen, (kx, ky), sigmaX=sigma_x, sigmaY=sigma_y)
-	except Exception as e:
-		logger.exception("Error al aplicar filtro Gaussiano: %s", e)
-		raise
+def aplicar_filtro_gaussiano(imagen: Any, kernel: Optional[Tuple[int, int]] = None, sigma: Optional[float] = None) -> Any:
+    """
+    Aplica un filtro Gaussiano usando parámetros de config si no se pasan explícitamente.
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible: %s", e)
+        return imagen
+
+    k = kernel or (getattr(config, "GAUSSIAN_KERNEL", None) if config else None) or (5, 5)
+    s = sigma if sigma is not None else ((getattr(config, "GAUSSIAN_SIGMA", None) if config else None) or 1.5)
+    try:
+        return cv2.GaussianBlur(imagen, k, s)
+    except Exception as e:
+        LOGGER.error("Error aplicando filtro gaussiano (k=%s, sigma=%s): %s", k, s, e)
+        return imagen
 
 
 def ecualizar_histograma(imagen_gris: Any) -> Any:
-	"""Ecualiza histograma de una imagen en escala de grises."""
-	try:
-		if imagen_gris.ndim != 2:
-			raise ValueError("'ecualizar_histograma' requiere imagen en escala de grises (2D)")
-		return cv2.equalizeHist(imagen_gris)
-	except Exception as e:
-		logger.exception("Error al ecualizar histograma: %s", e)
-		raise
+    """
+    Ecualiza histograma de una imagen en escala de grises con cv2.equalizeHist.
+    Si recibe color, primero convierte a gris.
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV (cv2) no disponible: %s", e)
+        return imagen_gris
+
+    try:
+        # Asegurar gris
+        shape = getattr(imagen_gris, "shape", None)
+        if shape is None:
+            return imagen_gris
+        if len(shape) != 2:
+            imagen_gris = convertir_gris(imagen_gris)
+        return cv2.equalizeHist(imagen_gris)
+    except Exception as e:
+        LOGGER.error("Error en ecualización de histograma: %s", e)
+        return imagen_gris
 
 
 def normalizar_imagen(imagen: Any) -> Any:
-	"""Normaliza la imagen a rango [0, 1] en float32."""
-	try:
-		if imagen.dtype.kind in ("u", "i"):
-			return (imagen.astype(np.float32) / 255.0).clip(0.0, 1.0)
-		# Si ya es float, asegurar rango [0,1]
-		img = imagen.astype(np.float32)
-		# Reescalar si supera 1.0
-		if img.max() > 1.0:
-			img = img / 255.0
-		img = np.clip(img, 0.0, 1.0)
-		return img
-	except Exception as e:
-		logger.exception("Error al normalizar imagen: %s", e)
-		raise
+    """
+    Normaliza la imagen al rango [0,255] y tipo uint8 si no lo está.
+    Mantiene la imagen si ya es uint8.
+    """
+    try:
+        import numpy as np  # type: ignore
+        import cv2  # type: ignore
+    except Exception as e:
+        LOGGER.error("Dependencias para normalización no disponibles: %s", e)
+        return imagen
+
+    try:
+        if imagen.dtype == np.uint8:
+            return imagen
+        # Normalización min-max a [0,255]
+        norm = cv2.normalize(imagen, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+        return norm.astype(np.uint8)
+    except Exception as e:
+        LOGGER.error("Error normalizando imagen: %s", e)
+        return imagen
 
 
-def aplicar_morfologia(
-	imagen: Any,
-	operacion: str = "apertura",
-	kernel_size: Optional[Union[int, Tuple[int, int]]] = None,
-) -> Any:
-	"""Aplica operación morfológica (apertura, cierre, erosion, dilatacion).
+def aplicar_morfologia(imagen: Any, operacion: str = "apertura", kernel_size: int = 3) -> Any:
+    """
+    Aplica operación morfológica: 'apertura', 'cierre', 'erosion', 'dilatacion'.
+    kernel_size es el tamaño de un kernel cuadrado de unos.
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV/NumPy no disponibles: %s", e)
+        return imagen
 
-	Usa por defecto parámetros de CFG.MORPH_* y soporta override por argumentos.
-	"""
-	try:
-		morph_code, iters = _morph_params(operacion)
-		kernel = _make_kernel(kernel_size)
-		if morph_code == cv2.MORPH_ERODE:
-			return cv2.erode(imagen, kernel, iterations=iters)
-		if morph_code == cv2.MORPH_DILATE:
-			return cv2.dilate(imagen, kernel, iterations=iters)
-		return cv2.morphologyEx(imagen, morph_code, kernel, iterations=iters)
-	except Exception as e:
-		logger.exception("Error al aplicar morfología '%s': %s", operacion, e)
-		raise
+    op = operacion.lower()
+    k = max(1, int(kernel_size))
+    kernel = np.ones((k, k), np.uint8)
+
+    try:
+        if op == "apertura":
+            return cv2.morphologyEx(imagen, cv2.MORPH_OPEN, kernel)
+        if op == "cierre":
+            return cv2.morphologyEx(imagen, cv2.MORPH_CLOSE, kernel)
+        if op == "erosion":
+            return cv2.erode(imagen, kernel, iterations=1)
+        if op == "dilatacion":
+            return cv2.dilate(imagen, kernel, iterations=1)
+        LOGGER.warning("Operación morfológica desconocida '%s'. Devolviendo imagen original.", operacion)
+        return imagen
+    except Exception as e:
+        LOGGER.error("Error aplicando morfología '%s': %s", operacion, e)
+        return imagen
 
 
-__all__ = [
-	"redimensionar_imagen",
-	"convertir_gris",
-	"aplicar_filtro_gaussiano",
-	"ecualizar_histograma",
-	"normalizar_imagen",
-	"aplicar_morfologia",
-]
+def binarizar_imagen(imagen: Any, metodo: str = "otsu") -> Any:
+    """
+    Binariza la imagen.
+    - metodo='otsu' (por defecto): usa Otsu si config.UMBRAL_OTSU es True o si se fuerza por parámetro.
+    - metodo='binary': umbral fijo 127.
+    - metodo='adaptive': umbral adaptativo gaussiano.
+    Devuelve una imagen binaria (uint8 0/255).
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception as e:
+        LOGGER.error("OpenCV/NumPy no disponibles: %s", e)
+        return imagen
 
+    try:
+        # Asegurar escala de grises uint8
+        gris = convertir_gris(imagen)
+        gris = normalizar_imagen(gris)
+
+        m = metodo.lower()
+        if m == "otsu" and ((getattr(config, "UMBRAL_OTSU", True) if config else True)):
+            _thr, binaria = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Morfología posterior para consolidar regiones
+            if getattr(config, "MORFOLOGIA_POST_UMBRAL", False) if config else False:
+                try:
+                    op = getattr(config, "MORFOLOGIA_OPERACION", "cierre") if config else "cierre"
+                    ks = int(getattr(config, "MORFOLOGIA_KERNEL", 3) if config else 3)
+                    binaria = aplicar_morfologia(binaria, operacion=op, kernel_size=ks)
+                except Exception:
+                    pass
+            return binaria
+        elif m == "adaptive":
+            binaria = cv2.adaptiveThreshold(gris, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                            cv2.THRESH_BINARY, 11, 2)
+            if getattr(config, "MORFOLOGIA_POST_UMBRAL", False) if config else False:
+                try:
+                    op = getattr(config, "MORFOLOGIA_OPERACION", "cierre") if config else "cierre"
+                    ks = int(getattr(config, "MORFOLOGIA_KERNEL", 3) if config else 3)
+                    binaria = aplicar_morfologia(binaria, operacion=op, kernel_size=ks)
+                except Exception:
+                    pass
+            return binaria
+        else:  # 'binary' u otros
+            _thr, binaria = cv2.threshold(gris, 127, 255, cv2.THRESH_BINARY)
+            if getattr(config, "MORFOLOGIA_POST_UMBRAL", False) if config else False:
+                try:
+                    op = getattr(config, "MORFOLOGIA_OPERACION", "cierre") if config else "cierre"
+                    ks = int(getattr(config, "MORFOLOGIA_KERNEL", 3) if config else 3)
+                    binaria = aplicar_morfologia(binaria, operacion=op, kernel_size=ks)
+                except Exception:
+                    pass
+            return binaria
+    except Exception as e:
+        LOGGER.error("Error en binarización (metodo=%s): %s", metodo, e)
+        return imagen

@@ -1,140 +1,131 @@
 """
-Configuración del proyecto de visión para clasificación de tuercas, tornillos y arandelas.
+Configuración centralizada para la clasificación de tuercas, tornillos y arandelas.
 
-Todas las variables son constantes en MAYÚSCULAS para facilitar su uso y trazabilidad.
+Todas las variables aquí son constantes (MAYÚSCULAS) pensadas para ser importadas
+por los distintos módulos del proyecto.
 """
+from typing import Tuple, Dict, List
 
-from pathlib import Path
+# ==========================
+# RUTAS DE DATOS Y MODELOS
+# ==========================
+DATASET_PATH: str = "./dataset"
+MODELOS_PATH: str = "./modelos"
+# Carpeta de resultados (si no existe, se crea en runtime)
+RESULTADOS_PATH: str = "./resultados"
 
-# =============================
-# RUTAS DEL PROYECTO
-# =============================
-# Raíz del proyecto: carpeta padre de "codigo/"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# ==========================
+# PREPROCESADO DE IMAGEN
+# ==========================
+# Tamaño de imagen para redimensionamiento (ancho, alto)
+IMAGE_SIZE: Tuple[int, int] = (500, 500)
 
-# Rutas relativas a datos y modelos (resueltas desde PROJECT_ROOT)
-DATASET_DIR = PROJECT_ROOT / "dataset"
-MODELOS_DIR = PROJECT_ROOT / "modelos"
-RESULTADOS_DIR = PROJECT_ROOT / "resultados"
+# Parámetros del filtro Gaussiano
+GAUSSIAN_KERNEL: Tuple[int, int] = (5, 5)
+GAUSSIAN_SIGMA: float = 1.5
 
-# Clases disponibles en el dataset
-CLASSES = ("tuercas", "tornillos", "arandelas")
-CLASS_TO_LABEL = {name: idx for idx, name in enumerate(CLASSES)}
+# Morfología posterior al umbral para mejorar máscaras
+MORFOLOGIA_POST_UMBRAL: bool = True
+MORFOLOGIA_OPERACION: str = "cierre"  # opciones: 'apertura', 'cierre', 'erosion', 'dilatacion'
+MORFOLOGIA_KERNEL: int = 3
 
+# ==========================
+# SEGMENTACIÓN
+# ==========================
+# Método de umbralado: Otsu. Si se usan otros métodos, cambiar esta bandera o añadir opciones.
+UMBRAL_OTSU: bool = True
 
-# =============================
-# PARÁMETROS DE IMAGEN
-# =============================
-# Tamaño para redimensionamiento (ancho, alto)
-IMAGE_SIZE = (256, 256)
+# ==========================
+# CONTORNOS Y FILTRADO POR ÁREA
+# ==========================
+AREA_MIN: int = 1000
+AREA_MAX: int = 50000
 
-# Interpolación para redimensionar: "nearest", "linear", "area", "cubic", "lanczos"
-RESIZE_INTERPOLATION = "area"
+# Filtro de aspecto para descartar ruidos extremos (w/h vs h/w)
+ASPECTO_MIN: float = 0.3
+ASPECTO_MAX: float = 12.0
 
+# Padding relativo alrededor del ROI del contorno
+ROI_PADDING: float = 0.05
 
-# =============================
-# PREPROCESAMIENTO: FILTRO GAUSSIANO
-# =============================
-# Tamaño de kernel impar (kx, ky) y sigmas
-GAUSSIAN_KERNEL_SIZE = (5, 5)
-GAUSSIAN_SIGMA_X = 0.0
-GAUSSIAN_SIGMA_Y = 0.0
+# ==========================
+# EXTRACCIÓN DE CARACTERÍSTICAS
+# ==========================
+# Configuración para HOG
+USE_HOG: bool = True
+HOG_ORIENTACIONES: int = 9
+HOG_PIXELS_PER_CELL: Tuple[int, int] = (8, 8)
+HOG_CELDAS_X: int = 8  # número de celdas horizontales para dividir el ROI
+HOG_CELDAS_Y: int = 8  # número de celdas verticales
 
+# ==========================
+# CLASIFICADORES
+# ==========================
+# Hiperparámetros para SVM y KNN
+SVM_PARAMS: Dict[str, object] = {
+    "C": 1.0,
+    "kernel": "rbf",
+    "class_weight": "balanced",
+    "probability": True,
+}
 
-# =============================
-# SEGMENTACIÓN: THRESHOLDS Y MORFOLOGÍA
-# =============================
-# Método de umbralización: "fixed", "adaptive-mean", "adaptive-gaussian", "otsu"
-THRESH_METHOD = "otsu"
+KNN_PARAMS: Dict[str, int] = {
+    "n_neighbors": 5,
+}
 
-# Umbral fijo (si THRESH_METHOD == "fixed")
-THRESH_BINARY = 127
-THRESH_MAXVAL = 255
+RF_PARAMS: Dict[str, object] = {
+    "n_estimators": 300,
+    "random_state": 42,
+    "class_weight": "balanced",
+}
 
-# Umbralización adaptativa (si THRESH_METHOD empieza por "adaptive-")
-ADAPTIVE_METHOD = "gaussian"  # "mean" o "gaussian"
-ADAPTIVE_BLOCK_SIZE = 11       # Debe ser impar y >= 3
-ADAPTIVE_C = 2                 # Constante restada del promedio local
+# Parrillas de búsqueda para GridSearchCV (se usan si --tune)
+GRID_SVM: Dict[str, List[object]] = {
+    "clf__C": [0.1, 1, 10, 100],
+    "clf__gamma": ["scale", 0.1, 0.01, 0.001],
+    "clf__kernel": ["rbf"],
+}
+GRID_KNN: Dict[str, List[object]] = {
+    "clf__n_neighbors": [3, 5, 7, 11],
+    "clf__weights": ["uniform", "distance"],
+    "clf__p": [1, 2],
+}
+GRID_RF: Dict[str, List[object]] = {
+    "clf__n_estimators": [200, 400, 800],
+    "clf__max_depth": [None, 10, 20],
+    "clf__max_features": ["sqrt", "log2"],
+}
 
-# Operaciones morfológicas para limpiar máscaras
-MORPH_OP = "open"              # "open", "close", "erode", "dilate"
-MORPH_KERNEL_SIZE = (3, 3)
-MORPH_ITERATIONS = 1
+# Reducción de dimensionalidad opcional (útil con HOG)
+USE_PCA: bool = True
+PCA_COMPONENTS: int = 100
+PCA_WHITEN: bool = False
 
+# ==========================================================
+# UMBRALES PARA CLASIFICACIÓN POR CARACTERÍSTICAS (HEURÍSTICOS)
+# ==========================================================
+# Objetos alargados tienden a ser tornillos
+UMBRAL_ASPECTO_TORNILLO: float = 1.7
 
-# =============================
-# CONTORNOS
-# =============================
-# Áreas mínima y máxima para filtrar contornos (en píxeles)
-MIN_CONTOUR_AREA = 200.0
-MAX_CONTOUR_AREA = 1_000_000.0
+# Mínimo de detección de aristas para tuercas (por ejemplo, fracción de píxeles borde/total)
+UMBRAL_ARISTAS_TUERCA: float = 0.6
 
+# Relación área del agujero / área total para considerar arandela
+UMBRAL_AGUJERO_ARANDELA: float = 0.3
 
-# =============================
-# EXTRACCIÓN DE CARACTERÍSTICAS: HOG
-# =============================
-HOG_ORIENTATIONS = 9
-HOG_PIXELS_PER_CELL = (8, 8)
-HOG_CELLS_PER_BLOCK = (2, 2)
-HOG_BLOCK_NORM = "L2-Hys"      # "L1", "L1-sqrt", "L2", "L2-Hys"
-HOG_TRANSFORM_SQRT = True
+# Para distinguir formas compactas (p. ej., perímetro^2 / (4π area))
+UMBRAL_COMPACIDAD: float = 1.5
 
-
-# =============================
-# CLASIFICACIÓN: HIPERPARÁMETROS
-# =============================
-# SVM
-SVM_C = 1.0
-SVM_KERNEL = "rbf"              # "linear", "poly", "rbf", "sigmoid"
-SVM_GAMMA = "scale"            # "scale", "auto" o un valor float
-
-
-# KNN
-KNN_N_NEIGHBORS = 5
-KNN_WEIGHTS = "distance"       # "uniform" o "distance"
-KNN_METRIC = "minkowski"       # "euclidean", "manhattan", "minkowski", etc.
-KNN_P = 2                       # p=2 => euclídea, p=1 => manhattan
-
-
-# =============================
-# EXPERIMENTACIÓN / REPRODUCIBILIDAD
-# =============================
-RANDOM_STATE = 42
-TEST_SIZE = 0.2
-N_FOLDS = 5
-
-
-# =============================
-# NOMBRADO DE MODELOS / ARTEFACTOS
-# =============================
-MODEL_FILENAME_SVM = "svm_hog.joblib"
-MODEL_FILENAME_KNN = "knn_hog.joblib"
-
-
-__all__ = [
-	# Rutas
-	"PROJECT_ROOT", "DATASET_DIR", "MODELOS_DIR", "RESULTADOS_DIR",
-	# Dataset
-	"CLASSES", "CLASS_TO_LABEL",
-	# Imagen
-	"IMAGE_SIZE", "RESIZE_INTERPOLATION",
-	# Gaussiano
-	"GAUSSIAN_KERNEL_SIZE", "GAUSSIAN_SIGMA_X", "GAUSSIAN_SIGMA_Y",
-	# Segmentación
-	"THRESH_METHOD", "THRESH_BINARY", "THRESH_MAXVAL",
-	"ADAPTIVE_METHOD", "ADAPTIVE_BLOCK_SIZE", "ADAPTIVE_C",
-	"MORPH_OP", "MORPH_KERNEL_SIZE", "MORPH_ITERATIONS",
-	# Contornos
-	"MIN_CONTOUR_AREA", "MAX_CONTOUR_AREA",
-	# HOG
-	"HOG_ORIENTATIONS", "HOG_PIXELS_PER_CELL", "HOG_CELLS_PER_BLOCK",
-	"HOG_BLOCK_NORM", "HOG_TRANSFORM_SQRT",
-	# Clasificación
-	"SVM_C", "SVM_KERNEL", "SVM_GAMMA",
-	"KNN_N_NEIGHBORS", "KNN_WEIGHTS", "KNN_METRIC", "KNN_P",
-	# Experimentos
-	"RANDOM_STATE", "TEST_SIZE", "N_FOLDS",
-	# Artefactos
-	"MODEL_FILENAME_SVM", "MODEL_FILENAME_KNN",
+# ==========================
+# CARACTERÍSTICAS PRINCIPALES
+# ==========================
+CARACTERISTICAS_PRINCIPALES: List[str] = [
+    "relacion_aspecto",
+    "tiene_aristas",
+    "tiene_agujero",
+    "circularidad",
+    "compacidad",
+    "numero_lados_aprox",
+    "hog",
 ]
 
