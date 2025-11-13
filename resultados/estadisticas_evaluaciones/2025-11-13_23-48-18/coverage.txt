@@ -1,0 +1,5 @@
+total_imagenes=480
+procesadas=479
+saltadas=1
+saltadas_listado=
+- /home/Agusti/tercero/primer_quatri/computadores/proyecto_final/dataset/tuercas/prueba_tuerca_3.png :: sin_caracteristicas

@@ -1,0 +1,9 @@
+              precision    recall  f1-score   support
+
+   arandelas       0.87      0.82      0.84       175
+   tornillos       0.83      0.85      0.84       153
+     tuercas       0.82      0.85      0.83       144
+
+    accuracy                           0.84       472
+   macro avg       0.84      0.84      0.84       472
+weighted avg       0.84      0.84      0.84       472

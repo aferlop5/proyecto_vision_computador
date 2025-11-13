@@ -98,8 +98,13 @@ GRID_RF: Dict[str, List[object]] = {
 
 # Reducción de dimensionalidad opcional (útil con HOG)
 USE_PCA: bool = True
-PCA_COMPONENTS: int = 100
+PCA_COMPONENTS: int = 120
 PCA_WHITEN: bool = False
+
+# Embeddings profundos (pretrained CNN)
+USE_DEEP_FEATURES: bool = True
+DEEP_MODEL_NAME: str = "resnet18"
+DEEP_FEATURES_DIM: int = 512
 
 # ==========================================================
 # UMBRALES PARA CLASIFICACIÓN POR CARACTERÍSTICAS (HEURÍSTICOS)
@@ -108,7 +113,13 @@ PCA_WHITEN: bool = False
 UMBRAL_ASPECTO_TORNILLO: float = 1.7
 
 # Mínimo de detección de aristas para tuercas (por ejemplo, fracción de píxeles borde/total)
-UMBRAL_ARISTAS_TUERCA: float = 0.6
+UMBRAL_ARISTAS_TUERCA: float = 0.5
+
+# Diferenciación suavizada entre tuercas y arandelas
+UMBRAL_RATIO_AGUJERO_TUERCA_MAX: float = 0.7
+UMBRAL_RATIO_AGUJERO_ARANDELA_MIN: float = 0.6
+UMBRAL_SOLIDEZ_TUERCA_MAX: float = 0.9
+UMBRAL_RECTANGULARIDAD_TUERCA_MIN: float = 0.5
 
 # Relación área del agujero / área total para considerar arandela
 UMBRAL_AGUJERO_ARANDELA: float = 0.3
@@ -119,13 +130,25 @@ UMBRAL_COMPACIDAD: float = 1.5
 # ==========================
 # CARACTERÍSTICAS PRINCIPALES
 # ==========================
+HOG_VECTOR_LENGTH: int = HOG_CELDAS_X * HOG_CELDAS_Y * HOG_ORIENTACIONES
+HU_MOMENTS_LENGTH: int = 7
+
 CARACTERISTICAS_PRINCIPALES: List[str] = [
     "relacion_aspecto",
-    "tiene_aristas",
-    "tiene_agujero",
     "circularidad",
     "compacidad",
+    "solidez",
+    "rectangularidad",
+    "excentricidad",
     "numero_lados_aprox",
+    "suavidad",
+    "uniformidad",
+    "hu_moments",
     "hog",
+    "deep_features",
+    "indice_aristas",
+    "ratio_agujero",
+    "tiene_aristas",
+    "tiene_agujero",
 ]
 

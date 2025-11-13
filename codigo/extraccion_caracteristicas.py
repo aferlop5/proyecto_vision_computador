@@ -21,6 +21,88 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 LOGGER = logging.getLogger(__name__)
 
+_DEEP_MODEL = None
+_DEEP_TRANSFORM = None
+_DEEP_AVAILABLE: Optional[bool] = None
+
+
+def _get_deep_extractor():
+    """Devuelve (modelo, transform) para extraer embeddings si está habilitado."""
+    global _DEEP_MODEL, _DEEP_TRANSFORM, _DEEP_AVAILABLE
+    if not (getattr(config, "USE_DEEP_FEATURES", False) if config else False):
+        return None, None
+    if _DEEP_AVAILABLE is False:
+        return None, None
+    if _DEEP_MODEL is not None and _DEEP_TRANSFORM is not None:
+        return _DEEP_MODEL, _DEEP_TRANSFORM
+    try:
+        import torch  # type: ignore
+        from torchvision import models  # type: ignore
+    except Exception as e:
+        LOGGER.warning("torch/torchvision no disponibles para deep features: %s", e)
+        _DEEP_AVAILABLE = False
+        return None, None
+
+    nombre = str(getattr(config, "DEEP_MODEL_NAME", "resnet18") if config else "resnet18").lower()
+    try:
+        if nombre == "resnet18":
+            from torchvision.models import ResNet18_Weights  # type: ignore
+            weights = ResNet18_Weights.DEFAULT
+            backbone = models.resnet18(weights=weights)
+        elif nombre == "mobilenet_v3_small":
+            from torchvision.models import MobileNet_V3_Small_Weights  # type: ignore
+            weights = MobileNet_V3_Small_Weights.DEFAULT
+            backbone = models.mobilenet_v3_small(weights=weights)
+        else:
+            LOGGER.warning("Modelo profundo '%s' no soportado, usando resnet18", nombre)
+            from torchvision.models import ResNet18_Weights  # type: ignore
+            weights = ResNet18_Weights.DEFAULT
+            backbone = models.resnet18(weights=weights)
+    except Exception as e:
+        LOGGER.warning("No se pudieron cargar pesos del modelo profundo: %s", e)
+        _DEEP_AVAILABLE = False
+        return None, None
+
+    try:
+        import torch  # type: ignore
+        modules = list(backbone.children())[:-1]
+        model = torch.nn.Sequential(*modules)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        transform = weights.transforms()
+        _DEEP_MODEL = model
+        _DEEP_TRANSFORM = transform
+        _DEEP_AVAILABLE = True
+        return _DEEP_MODEL, _DEEP_TRANSFORM
+    except Exception as e:
+        LOGGER.warning("Error inicializando extractor profundo: %s", e)
+        _DEEP_AVAILABLE = False
+        return None, None
+
+
+def _extraer_deep_features(imagen: Any) -> List[float]:
+    modelo, transform = _get_deep_extractor()
+    if modelo is None or transform is None:
+        return []
+    try:
+        import torch  # type: ignore
+        import cv2  # type: ignore
+        from PIL import Image  # type: ignore
+
+        if imagen is None:
+            return []
+        rgb = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+        tensor = transform(pil).unsqueeze(0)
+        with torch.no_grad():
+            embedding = modelo(tensor)
+        vec = embedding.view(-1).cpu().numpy().astype(float)
+        return vec.tolist()
+    except Exception as e:
+        LOGGER.info("Fallo extrayendo embeddings profundos: %s", e)
+        return []
+
 
 # ======================
 # CARACTERÍSTICAS GEOMÉTRICAS
@@ -414,5 +496,10 @@ def extraer_caracteristicas_completas(imagen: Any, contorno: Any, imagen_binaria
         feats["suavidad"] = None
         feats["uniformidad"] = None
         feats["hog"] = []
+
+    if getattr(config, "USE_DEEP_FEATURES", False) if config else False:
+        feats["deep_features"] = _extraer_deep_features(imagen)
+    else:
+        feats["deep_features"] = []
 
     return feats

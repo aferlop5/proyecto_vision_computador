@@ -216,3 +216,52 @@ def binarizar_imagen(imagen: Any, metodo: str = "otsu") -> Any:
     except Exception as e:
         LOGGER.error("Error en binarización (metodo=%s): %s", metodo, e)
         return imagen
+
+
+def preprocesar_para_segmentacion(imagen: Any) -> Any:
+    """Preprocesado específico para segmentación robusta.
+
+    Pipeline pensado para obtener bordes más estables frente a cambios de
+    iluminación y ruido:
+    - Conversión a gris
+    - Ecualización adaptativa del histograma (CLAHE)
+    - Suavizado que preserve bordes (mediana o bilateral según config)
+    Devuelve imagen en gris uint8 lista para binarización/edges.
+    """
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception as e:
+        LOGGER.error("Dependencias para preprocesar segmentacion no disponibles: %s", e)
+        return imagen
+
+    try:
+        gris = convertir_gris(imagen)
+        gris = normalizar_imagen(gris)
+
+        # CLAHE para compensar variaciones de iluminación
+        clip = float(getattr(config, "CLAHE_CLIP", 2.0) if config else 2.0)
+        tile = getattr(config, "CLAHE_TILE_GRID", (8, 8)) if config else (8, 8)
+        try:
+            clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=tile)
+            gris = clahe.apply(gris)
+        except Exception:
+            pass
+
+        # Suavizado que preserve bordes
+        blur_tipo = str(getattr(config, "SEGMENTACION_BLUR_TIPO", "mediana") if config else "mediana").lower()
+        k = int(getattr(config, "SEGMENTACION_BLUR_K", 5) if config else 5)
+        k = k if k % 2 == 1 else k + 1  # aseguramos impar
+        try:
+            if blur_tipo == "bilateral":
+                gris = cv2.bilateralFilter(gris, d=k, sigmaColor=75, sigmaSpace=75)
+            elif blur_tipo == "gauss":
+                gris = cv2.GaussianBlur(gris, (k, k), 1.5)
+            else:  # mediana por defecto
+                gris = cv2.medianBlur(gris, k)
+        except Exception:
+            pass
+        return gris
+    except Exception as e:
+        LOGGER.error("Error en preprocesar_para_segmentacion: %s", e)
+        return imagen

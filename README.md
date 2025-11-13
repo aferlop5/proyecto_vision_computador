@@ -53,6 +53,7 @@ dataset/
   arandelas/
   tornillos/
   tuercas/
+	test/
 modelos/
 resultados/
 codigo/
@@ -85,13 +86,15 @@ Descripción de archivos:
 	- Umbralización Otsu, contornos `RETR_EXTERNAL + CHAIN_APPROX_SIMPLE`
 	- Filtrado por área y relación de aspecto, extracción de ROI, orientación básica
 
-5) `codigo/extraccion_caracteristicas.py` (🔍): Descriptores de forma y textura.
+5) `codigo/extraccion_caracteristicas.py` (🔍): Descriptores de forma, textura y embeddings.
 	- Relación de aspecto, solidez, circularidad, compacidad, rectangularidad, excentricidad
 	- Aristas (polígono aproximado), detección de agujero, momentos de Hu, textura/uniformidad
+	- Embeddings profundos opcionales (ResNet18/MobileNet) cuando `USE_DEEP_FEATURES=True`
 
 6) `codigo/clasificacion.py` (🧠): Clasificación ML + reglas.
-	- SVM/KNN/RandomForest con `StandardScaler`
-	- Clasificación por reglas (backup) y combinación ML+reglas
+	- SVM/KNN/RandomForest con `StandardScaler` y PCA opcional
+	- Validación basada en probabilidad con umbrales moderados para evitar sobrecorrecciones
+	- Reglas suavizadas de respaldo y combinación ML+reglas
 
 7) `codigo/evaluacion.py` (📊): Métricas y análisis.
 	- Accuracy, precisión, recall, F1, matriz de confusión, curvas de aprendizaje
@@ -135,6 +138,20 @@ Si tienes problemas al mostrar/guardar imágenes con OpenCV en Linux, instala `l
 sudo apt-get update && sudo apt-get install -y libgl1
 ```
 
+Para usar embeddings profundos instala PyTorch (`torch`, `torchvision`). Si prefieres evitar esa dependencia, desactiva `USE_DEEP_FEATURES` en `codigo/config.py`.
+
+> **Mejor rendimiento reproducido** (11/14/2025)
+> ```bash
+> # desde la raíz del proyecto
+> python codigo/main.py --entrenar --modelo svm --tune
+> python codigo/main.py --evaluar --modelo svm
+> ```
+> - Accuracy entrenamiento (hold-out interno): ~0.9896
+> - Accuracy evaluación completa: ~0.998 (ver `resultados/estadisticas_evaluaciones/<timestamp>/metricas_svm.txt`)
+> - Mejores hiperparámetros encontrados: `C=10`, `gamma='scale'`, `kernel='rbf'`
+> - Heurísticas: probabilidad mínima 0.45 para aceptar predicción ML, correcciones sólo ante agujero grande en tornillos o falta de aristas en supuestas tuercas.
+> - Test externo: `python codigo/main.py --evaluar-test --modelo svm` genera anotaciones y estadísticas en `resultados_test/<timestamp>/`.
+
 ## ▶️ Cómo Ejecutar
 
 Entrenamiento (SVM por defecto):
@@ -158,10 +175,14 @@ Evaluación de un modelo existente:
 python codigo/main.py --evaluar --modelo svm
 # alias explícito para evaluar TODO el dataset
 python codigo/main.py --evaluar-todo --modelo svm
+
+# clasificación rápida del conjunto externo ubicado en dataset/test
+python codigo/main.py --evaluar-test --modelo svm
 ```
 
 Notas:
 - Estructura del dataset: coloca imágenes directamente dentro de `dataset/arandelas`, `dataset/tornillos`, `dataset/tuercas` (sin subcarpetas por ángulo). El código resuelve `./dataset` siempre respecto a la raíz del repo, aunque ejecutes desde `codigo/`.
+- Las imágenes externas que quieras validar sin afectar el entrenamiento colócalas en `dataset/test`; se procesan con `--evaluar-test` y no participan en el entrenamiento.
 - Los modelos se guardan en `./modelos/` y resultados/figuras en `./resultados/`.
 - Si `scikit-learn` no está instalado, el sistema puede degradarse a reglas simples.
 
@@ -204,6 +225,7 @@ Además, al final de la evaluación se imprime el Accuracy en consola y queda re
 - HOG (opcional, activado por defecto):
 	- Se calcula sobre el ROI con padding (`ROI_PADDING`) para capturar bordes del objeto.
 	- Parámetros en `config.py`: `HOG_ORIENTACIONES`, `HOG_PIXELS_PER_CELL`, `HOG_CELDAS_X`, `HOG_CELDAS_Y`.
+- Embeddings profundos opcionales: vector de 512 dimensiones del backbone seleccionado (por defecto ResNet18) para capturar textura y forma de alto nivel.
 
 El ROI se extrae del contorno mayor tras filtros por área y relación de aspecto; puede expandirse con `ROI_PADDING` para capturar el objeto completo antes de HOG/texture.
 
@@ -235,13 +257,15 @@ El ROI se extrae del contorno mayor tras filtros por área y relación de aspect
 	 - Revisa `ASPECTO_MIN/MAX` si hay variabilidad alta.
 	 - Usa `--debug 5` para generar binarizados/contornos por clase y ajustar rápido.
 
-2) ROI + HOG:
-	 - Asegura `USE_HOG=True` y que el ROI tenga `ROI_PADDING` suficiente para no cortar bordes.
-	 - Ajusta rejilla HOG (`HOG_CELDAS_X/Y`) y bins (`HOG_ORIENTACIONES`).
+2) ROI + HOG + Deep:
+	- Asegura `USE_HOG=True` y que el ROI tenga `ROI_PADDING` suficiente para no cortar bordes.
+	- Ajusta rejilla HOG (`HOG_CELDAS_X/Y`) y bins (`HOG_ORIENTACIONES`).
+	- Activa `USE_DEEP_FEATURES` y confirma que PyTorch está instalado para sumar embeddings de alto nivel.
 
 3) Tuning de modelo:
 	 - Lanza `--tune` con SVM; guarda el mejor estimador automáticamente.
-	 - Si hay desbalance, `class_weight='balanced'` ya viene activado en SVM/RF.
+	- Si hay desbalance, `class_weight='balanced'` ya viene activado en SVM/RF.
+	- Ajusta los umbrales de validación heurística si detectas que las reglas corrigen demasiado.
 
 4) Validación:
 	 - Revisa `classification_report.txt` y `confusion_matrix.png` en cada ejecución.
@@ -253,13 +277,15 @@ El ROI se extrae del contorno mayor tras filtros por área y relación de aspect
 3) Mantenibilidad (🔧): configuración centralizada, módulos desacoplados, fácil de depurar.
 4) Escalabilidad (📈): sencillo añadir nuevas clases y evaluar el impacto.
 
-## 🚀 Resultados Esperados (objetivos)
-| Métrica               | Objetivo |
-|-----------------------|----------|
-| Accuracy general      | > 80%    |
-| Precisión tuercas     | > 85%    |
-| Recall tornillos      | > 75%    |
-| F1-score arandelas    | > 80%    |
+## 🚀 Resultados Actuales
+| Métrica                     | Valor (~11/14/2025) |
+|----------------------------|----------------------|
+| Accuracy evaluación total  | 0.998                |
+| Precision macro            | 0.998                |
+| Recall macro               | 0.998                |
+| F1 macro                   | 0.998                |
+| Accuracy hold-out (train)  | 0.990                |
+| Modelo y params            | SVM (C=10, gamma=scale, kernel=rbf) |
 
 ## 💡 Lecciones Aprendidas
 - Simplicidad > Complejidad: menos componentes, menos puntos de fallo.
