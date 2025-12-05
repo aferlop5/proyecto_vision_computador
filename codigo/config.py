@@ -110,18 +110,20 @@ DEEP_FEATURES_DIM: int = 512
 # UMBRALES PARA CLASIFICACIÓN POR CARACTERÍSTICAS (HEURÍSTICOS)
 # ==========================================================
 # Objetos alargados tienden a ser tornillos
-UMBRAL_ASPECTO_TORNILLO: float = 1.7
+UMBRAL_ASPECTO_TORNILLO: float = 1.8
 
 # Mínimo de detección de aristas para tuercas (por ejemplo, fracción de píxeles borde/total)
 UMBRAL_ARISTAS_TUERCA: float = 0.5
+UMBRAL_CIRCULARIDAD_ALTA: float = 0.85
 
-# Diferenciación suavizada entre tuercas y arandelas
-UMBRAL_RATIO_AGUJERO_TUERCA_MAX: float = 0.7
-UMBRAL_RATIO_AGUJERO_ARANDELA_MIN: float = 0.6
+# Diferenciación basada en tu especificación heurística
+# Tuerca: agujero < 20% ; Arandela: agujero > 30%
+UMBRAL_RATIO_AGUJERO_TUERCA_MAX: float = 0.2
+UMBRAL_RATIO_AGUJERO_ARANDELA_MIN: float = 0.3
 UMBRAL_SOLIDEZ_TUERCA_MAX: float = 0.9
 UMBRAL_RECTANGULARIDAD_TUERCA_MIN: float = 0.5
 
-# Relación área del agujero / área total para considerar arandela
+# Relación área del agujero / área total para considerar arandela (>= 30%)
 UMBRAL_AGUJERO_ARANDELA: float = 0.3
 
 # Para distinguir formas compactas (p. ej., perímetro^2 / (4π area))

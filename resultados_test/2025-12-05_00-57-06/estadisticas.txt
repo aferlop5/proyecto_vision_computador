@@ -1,0 +1,8 @@
+total_imagenes=45
+procesadas=45
+saltadas=0
+predicciones_por_clase=
+- arandelas: 18
+- tornillos: 16
+- tuercas: 6
+- sin_prediccion: 5

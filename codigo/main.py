@@ -348,6 +348,21 @@ def pipeline_entrenamiento(modelo: str = "svm", tune: bool = False, debug: int =
         LOGGER.error("No se pudieron extraer características. Abortando entrenamiento.")
         return
 
+    # 4.b Visualización: distribución de características por clase
+    try:
+        # Reconstruir diccionarios de características (solo escalares clave) para la figura
+        feats_list: List[Dict[str, Any]] = []
+        for v in X:
+            try:
+                feats_list.append(_to_feats_dict(v))
+            except Exception:
+                feats_list.append({})
+        base_resultados = _resolve_path(getattr(config, "RESULTADOS_PATH", "./resultados") if config else "./resultados")
+        out_path = os.path.join(base_resultados, "distribucion_caracteristicas.png")
+        ev.graficar_distribucion_caracteristicas(feats_list, y, ruta_salida=out_path)
+    except Exception as e:
+        LOGGER.info("No se pudo generar la distribución de características: %s", e)
+
     # 5. Dividir y entrenar
     LOGGER.info("[5/6] Dividiendo dataset y entrenando (%s)...", modelo)
     X_train, X_test, y_train, y_test = utils.dividir_dataset(X, y, test_size=0.2)

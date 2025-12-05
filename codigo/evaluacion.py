@@ -45,6 +45,127 @@ def _ensure_dir(path: str) -> None:
 
 
 # ======================
+# DISTRIBUCIÓN DE FEATURES
+# ======================
+def graficar_distribucion_caracteristicas(
+    feat_dicts: Sequence[Dict[str, Any]],
+    etiquetas: Sequence[str],
+    features: Optional[Sequence[str]] = None,
+    ruta_salida: Optional[str] = None,
+) -> Optional[str]:
+    """Genera y guarda 'distribucion_caracteristicas.png' con histogramas por clase.
+
+    - feat_dicts: lista de diccionarios de características por muestra
+    - etiquetas: clases correspondientes (mismo orden)
+    - features: claves a representar; por defecto usa un set geométrico básico
+    - ruta_salida: ruta del archivo de salida; si es None, se guarda en resultados/
+    """
+    try:
+        import numpy as np  # type: ignore
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception as e:
+        LOGGER.info("Matplotlib/Numpy no disponibles para graficar distribución: %s", e)
+        return None
+
+    if features is None:
+        features = [
+            "relacion_aspecto",
+            "circularidad",
+            "ratio_agujero",
+            "solidez",
+            "rectangularidad",
+            "numero_lados_aprox",
+        ]
+
+    # Agrupar por clase
+    clases = list(DEFAULT_CLASSES)
+    por_clase: Dict[str, Dict[str, list]] = {c: {f: [] for f in features} for c in clases}
+    for fd, lab in zip(feat_dicts, etiquetas):
+        c = lab if lab in por_clase else None
+        if c is None:
+            continue
+        for f in features:
+            v = fd.get(f, None)
+            try:
+                if v is None:
+                    continue
+                if isinstance(v, (list, tuple)):
+                    continue  # ignorar vectores largos (HOG, Hu) en esta vista
+                por_clase[c][f].append(float(v))
+            except Exception:
+                continue
+
+    # Crear figura
+    n = len(features)
+    cols = 3 if n >= 3 else n
+    rows = int(np.ceil(n / max(1, cols)))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3))
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    axes = axes.reshape(rows, cols)
+
+    colores = {"arandelas": "#1f77b4", "tornillos": "#2ca02c", "tuercas": "#d62728"}
+
+    for i, feat in enumerate(features):
+        r, c = divmod(i, cols)
+        ax = axes[r, c]
+        # compilar listas por clase
+        data = [por_clase[cl][feat] for cl in clases]
+        # elegir bins razonables
+        all_vals = [x for arr in data for x in arr]
+        if not all_vals:
+            ax.set_visible(False)
+            continue
+        vmin, vmax = min(all_vals), max(all_vals)
+        if feat == "numero_lados_aprox":
+            bins = np.arange(0, 10 + 1) - 0.5
+        else:
+            # rangos típicos [0,1] para razones; RA y otras pueden exceder 1
+            if vmin >= 0 and vmax <= 1:
+                bins = 15
+            else:
+                bins = 20
+
+        for cl in clases:
+            vals = por_clase[cl][feat]
+            if not vals:
+                continue
+            ax.hist(vals, bins=bins, alpha=0.5, label=cl, color=colores.get(cl, None))
+        ax.set_title(feat)
+        ax.set_ylabel("Frecuencia")
+        ax.grid(alpha=0.2, linestyle=":", linewidth=0.5)
+        if i % cols == cols - 1:
+            ax.legend(fontsize=8)
+
+    # Ocultar subplots sobrantes
+    for j in range(n, rows * cols):
+        r, c = divmod(j, cols)
+        axes[r, c].set_visible(False)
+
+    fig.suptitle("Distribución de características geométricas por clase", fontsize=12)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    # Ruta de salida
+    if ruta_salida is None:
+        base_root = getattr(config, "RESULTADOS_PATH", "./resultados") if config else "./resultados"
+        ruta_salida = os.path.join(os.path.abspath(base_root), "distribucion_caracteristicas.png")
+    try:
+        out_dir = os.path.dirname(ruta_salida) or "."
+        _ensure_dir(out_dir)
+        fig.savefig(ruta_salida, dpi=120, bbox_inches="tight")
+        try:
+            import matplotlib.pyplot as plt  # type: ignore
+            plt.close(fig)
+        except Exception:
+            pass
+        LOGGER.info("Distribución de características guardada en: %s", ruta_salida)
+        return ruta_salida
+    except Exception as e:
+        LOGGER.error("No se pudo guardar la distribución de características: %s", e)
+        return None
+
+
+# ======================
 # MÉTRICAS BÁSICAS
 # ======================
 
